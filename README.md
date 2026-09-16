@@ -1,18 +1,39 @@
-# Exemplo-Consulta-de-Cep
-Aplicação de terminal que recebe um CEP informado pelo usuário, consulta a API ViaCEP e apresenta os dados do endereço.
-import requests
+# Consulta de CEP em Python
 
-cep = input("Digite o CEP que deseja consultar: ")
+Aplicação de terminal desenvolvida em Python que consulta informações
+de endereço utilizando a API pública ViaCEP.
 
-url = f"https://viacep.com.br/ws/{cep}/json/"
+## Funcionalidades
 
-resposta = requests.get(url)
+- Recebe um CEP informado pelo usuário
+- Consulta a API ViaCEP
+- Exibe:
+  - CEP
+  - Logradouro
+  - Bairro
+  - Cidade
+  - Estado
 
-dados = resposta.json()
+## Tecnologias utilizadas
 
-print("\n--- Dados do endereço ---")
-print(f"CEP: {dados['cep']}")
-print(f"Logradouro: {dados['logradouro']}")
-print(f"Bairro: {dados['bairro']}")
-print(f"Cidade: {dados['localidade']}")
-print(f"Estado: {dados['uf']}")
+- Python
+- Requests
+- API ViaCEP
+
+## Como executar
+
+Clone o projeto:
+
+git clone https://github.com/arthur152125-boop/Exemplo-Consulta-de-Cep.git
+
+Entre na pasta:
+
+cd Exemplo-Consulta-de-Cep
+
+Instale as dependências:
+
+pip install -r requirements.txt
+
+Execute:
+
+python main.py
