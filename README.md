@@ -1,14 +1,23 @@
+# 📍 Consulta CEP - Aplicação Completa
+
+Uma aplicação robusta para consultar CEPs brasileiros com histórico de buscas, integração com Google Maps e API RESTful.
+
 ## ✨ Funcionalidades
 
 ### Frontend (CLI)
 - ✅ Buscar CEP individual
 - ✅ Buscar múltiplos CEPs de uma vez
 - ✅ Visualizar endereços formatados
-- ✅ Abrir localização no Google Maps
+- ✅ **Integração avançada com Google Maps (zoom 18x na localização exata)**
+  - 🗺️ Coordenadas precisas via Nominatim (OpenStreetMap)
+  - 🔄 Retry automático com backoff exponencial
+  - ⚡ Validações rigorosas de dados
+  - ⏱️ Delay inteligente para evitar rate limiting
+  - 🛡️ Fallback automático se navegador não abrir
 - ✅ Histórico de buscas persistente (JSON)
 - ✅ Remover duplicatas do histórico
 - ✅ Menu interativo com emojis
-- ✅ Tratamento robusto de erros
+- ✅ Tratamento robusto de erros com logging
 - ✅ Logging detalhado de operações
 
 ### Backend (API REST)
@@ -24,7 +33,64 @@
 
 ---
 
-## 📋 Requisitos
+## �️ Integração com Google Maps
+
+A aplicação oferece uma integração avançada com Google Maps para visualizar endereços de forma precisa e intuitiva.
+
+### 🎯 Características
+
+- **Zoom Automático (18x):** Visualização detalhada da localização exata
+- **Coordenadas Precisas:** Obtenidas via Nominatim (OpenStreetMap)
+- **Label Personalizado:** Nome da rua exibido no mapa
+- **Retry Inteligente:** Até 3 tentativas com backoff exponencial
+- **Validações Rigorosas:**
+  - Latitude: -90° a 90°
+  - Longitude: -180° a 180°
+  - Validação de estrutura JSON
+  - Conversão segura de tipos
+- **Tratamento de Erros:**
+  - Timeout automático (5 segundos)
+  - Reconexão com espera progressiva
+  - Limite de requisições (rate limiting)
+  - Fallback para link manual
+- **Performance:**
+  - Delay de 0.5s entre requisições múltiplas
+  - User-Agent configurado para evitar bloqueios
+  - Logging detalhado de operações
+
+### 📍 Como Usar
+
+#### Opção 1: CEP Único
+```
+1. Escolha "Buscar CEP"
+2. Digite o CEP (ex: 01310-100)
+3. Escolha "Abrir no Google Maps"
+4. O mapa abre automaticamente no navegador
+```
+
+#### Opção 2: Múltiplos CEPs
+```
+1. Escolha "Buscar múltiplos CEPs"
+2. Digite os CEPs (um por linha)
+3. Ao final, escolha abrir mapas
+4. Todos os mapas serão abertos com delay automático
+```
+
+### 🔗 Formato da URL
+
+A URL gerada segue este padrão:
+```
+https://www.google.com/maps/search/{logradouro}/@{latitude},{longitude},18z
+```
+
+**Exemplo:**
+```
+https://www.google.com/maps/search/Avenida+Paulista/@-23.5614,-46.6561,18z
+```
+
+---
+
+## �📋 Requisitos
 
 - Python 3.8+
 - pip (gerenciador de pacotes)
@@ -201,8 +267,8 @@ GET /saude
 
 ### APIs Externas
 - **ViaCEP** - Consulta de CEPs brasileiros
-- **Nominatim (OpenStreetMap)** - Geolocalização
-- **Google Maps** - Visualização de mapas
+- **Nominatim (OpenStreetMap)** - Geolocalização com retry e validações
+- **Google Maps** - Visualização de mapas com zoom automático
 
 ---
 
@@ -266,6 +332,9 @@ print(response.json())
 - **Cache:** Histórico local para referência rápida
 - **Timeout:** 5 segundos por requisição
 - **Limite de histórico:** 100 últimos registros
+- **Retry automático:** Até 3 tentativas com backoff exponencial
+- **Delay entre requisições:** 0.5 segundos (evita rate limiting)
+- **Validação de coordenadas:** Rigorosa com tratamento de exceções
 
 ---
 
@@ -295,6 +364,6 @@ Para dúvidas ou problemas, consulte a documentação da API em:
 
 ---
 
-**Versão:** 1.0.0  
+**Versão:** 1.1.0 (Google Maps Avançado)  
 **Última atualização:** 23 de Setembro de 2026  
 **Status:** ✅ Pronto para produção
