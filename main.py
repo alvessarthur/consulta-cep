@@ -12,6 +12,8 @@ CEP_API_URL = "https://viacep.com.br/ws/{}/json/"
 GEOCODE_API_URL = "https://nominatim.openstreetmap.org/search"
 REQUEST_TIMEOUT = 5
 HISTORICO_FILE = "historico_buscas.json"
+MAX_RETRIES = 3
+RETRY_DELAY = 1  # segundos
 
 logging.basicConfig(
     level=logging.INFO,
@@ -129,7 +131,7 @@ def buscar_endereco(cep: str) -> Optional[dict]:
         raise requests.RequestException(f"❌ Erro inesperado: {e}")
 
 def obter_coordenadas(endereco: dict) -> tuple:
-    """Obtém as coordenadas (latitude, longitude) do endereço."""
+    """Obtém as coordenadas (latitude, longitude) do endereço com retry e validações rigorosas."""
     try:
         logradouro = endereco.get("logradouro", "").strip()
         bairro = endereco.get("bairro", "").strip()
@@ -140,52 +142,116 @@ def obter_coordenadas(endereco: dict) -> tuple:
             logger.warning("Endereço incompleto para geolocalização")
             return None, None
         
-        endereco_completo = f"{logradouro}, {bairro}, {localidade}, {uf}, Brasil"
+        endereco_completo = f"{logradouro}, {localidade}, {uf}, Brasil"
         
         params = {
             "q": endereco_completo,
             "format": "json",
             "limit": 1,
-            "timeout": REQUEST_TIMEOUT
+            "timeout": REQUEST_TIMEOUT,
+            "accept-language": "pt-BR"
         }
         
-        response = requests.get(GEOCODE_API_URL, params=params, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        
-        dados = response.json()
-        
-        if not dados:
-            logger.warning("Coordenadas não encontradas")
-            return None, None
-        
-        lat = float(dados[0].get("lat"))
-        lon = float(dados[0].get("lon"))
-        
-        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            logger.warning("Coordenadas inválidas")
-            return None, None
-        
-        return lat, lon
+        # Implementar retry com backoff
+        for tentativa in range(MAX_RETRIES):
+            try:
+                response = requests.get(
+                    GEOCODE_API_URL, 
+                    params=params, 
+                    timeout=REQUEST_TIMEOUT,
+                    headers={"User-Agent": "Consulta-CEP/1.0"}
+                )
+                response.raise_for_status()
+                
+                dados = response.json()
+                
+                if not dados:
+                    logger.warning(f"Coordenadas não encontradas para: {endereco_completo}")
+                    return None, None
+                
+                # Validar estrutura da resposta
+                if not isinstance(dados[0], dict):
+                    logger.error("Formato inválido na resposta da API")
+                    return None, None
+                
+                try:
+                    lat = float(dados[0].get("lat"))
+                    lon = float(dados[0].get("lon"))
+                except (ValueError, TypeError):
+                    logger.error("Não foi possível converter coordenadas para float")
+                    return None, None
+                
+                # Validar range de coordenadas
+                if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                    logger.warning(f"Coordenadas inválidas: lat={lat}, lon={lon}")
+                    return None, None
+                
+                logger.info(f"Coordenadas obtidas com sucesso: {lat}, {lon}")
+                return lat, lon
+            
+            except requests.Timeout:
+                if tentativa < MAX_RETRIES - 1:
+                    logger.warning(f"Timeout na tentativa {tentativa + 1}/{MAX_RETRIES}. Aguardando...")
+                    time.sleep(RETRY_DELAY * (tentativa + 1))
+                else:
+                    logger.error("Timeout após todas as tentativas")
+                    return None, None
+            
+            except requests.ConnectionError:
+                if tentativa < MAX_RETRIES - 1:
+                    logger.warning(f"Erro de conexão na tentativa {tentativa + 1}/{MAX_RETRIES}. Aguardando...")
+                    time.sleep(RETRY_DELAY * (tentativa + 1))
+                else:
+                    logger.error("Erro de conexão após todas as tentativas")
+                    return None, None
+            
+            except requests.HTTPError as e:
+                if e.response.status_code == 429:  # Too Many Requests
+                    if tentativa < MAX_RETRIES - 1:
+                        espera = RETRY_DELAY * (2 ** tentativa)
+                        logger.warning(f"Limite de requisições atingido. Aguardando {espera}s...")
+                        time.sleep(espera)
+                    else:
+                        logger.error("Limite de requisições atingido após todas as tentativas")
+                        return None, None
+                else:
+                    logger.error(f"Erro HTTP {e.response.status_code}: {e.response.reason}")
+                    return None, None
+            
+            except requests.RequestException as e:
+                logger.error(f"Erro na requisição: {e}")
+                return None, None
     
-    except (requests.RequestException, KeyError, ValueError, TypeError) as e:
-        logger.error(f"Erro ao obter coordenadas: {e}")
+    except Exception as e:
+        logger.error(f"Erro inesperado ao obter coordenadas: {e}")
         return None, None
 
 def abrir_google_maps(endereco: dict) -> None:
     """Abre o Google Maps no navegador com a localização do CEP."""
-    lat, lon = obter_coordenadas(endereco)
-    
-    if lat is None or lon is None:
-        print("❌ Não foi possível abrir o mapa. Coordenadas inválidas.\n")
-        return
-    
     try:
-        url_google_maps = f"https://www.google.com/maps/search/{lat},{lon}"
-        print(f"🗺️  Abrindo Google Maps...")
-        webbrowser.open(url_google_maps)
-        print("✅ Google Maps aberto no navegador!\n")
+        lat, lon = obter_coordenadas(endereco)
+        
+        if lat is None or lon is None:
+            logger.error("Coordenadas inválidas ou não encontradas")
+            print("❌ Não foi possível abrir o mapa. Coordenadas inválidas.\n")
+            return
+        
+        # Construir URL melhorada do Google Maps com label
+        endereco_label = endereco.get("logradouro", "Localização").replace(" ", "+")
+        url_google_maps = f"https://www.google.com/maps/search/{endereco_label}/@{lat},{lon},18z"
+        
+        try:
+            print(f"🗺️  Abrindo Google Maps em {lat:.4f}, {lon:.4f}...")
+            webbrowser.open(url_google_maps)
+            logger.info(f"Google Maps aberto para: {lat}, {lon}")
+            print("✅ Google Maps aberto no navegador!\n")
+        except webbrowser.Error as e:
+            logger.error(f"Erro ao abrir navegador: {e}")
+            print(f"❌ Não foi possível abrir o navegador automaticamente.\n")
+            print(f"Abra manualmente este link:\n{url_google_maps}\n")
+    
     except Exception as e:
-        logger.error(f"Erro ao abrir mapa: {e}")
+        logger.error(f"Erro inesperado ao abrir mapa: {e}")
         print(f"❌ Erro ao abrir mapa: {e}\n")
 
 def formatar_endereco(endereco: dict) -> None:
@@ -293,6 +359,10 @@ def consultar_multiplos_ceps() -> None:
             print(f"\n🔹 Resultado {i}/{len(ceps)}")
             formatar_endereco(endereco)
             enderecos.append(endereco)
+            
+            # Delay para evitar rate limiting
+            if i < len(ceps):
+                time.sleep(0.5)
 
         except (ValueError, LookupError) as e:
             logger.error(f"Erro: {e}")
