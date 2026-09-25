@@ -1,65 +1,3 @@
-# 📍 Consulta CEP - Aplicação Completa
-
-Uma aplicação robusta para consultar CEPs brasileiros com histórico de buscas, integração com Google Maps e API RESTful.
-
-## ✨ Funcionalidades
-
-### Frontend (CLI)
-- ✅ Buscar CEP individual
-- ✅ Buscar múltiplos CEPs de uma vez
-- ✅ Visualizar endereços formatados
-- ✅ **Integração avançada com Google Maps (zoom 18x na localização exata)**
-  - 🗺️ Coordenadas precisas via Nominatim (OpenStreetMap)
-  - 🔄 Retry automático com backoff exponencial
-  - ⚡ Validações rigorosas de dados
-  - ⏱️ Delay inteligente para evitar rate limiting
-  - 🛡️ Fallback automático se navegador não abrir
-- ✅ Histórico de buscas persistente (JSON)
-- ✅ Remover duplicatas do histórico
-- ✅ Menu interativo com emojis
-- ✅ Tratamento robusto de erros com logging
-- ✅ Logging detalhado de operações
-
-### Backend (API REST)
-- ✅ Endpoint para consultar CEP individual
-- ✅ Endpoint para consultar CEP com coordenadas
-- ✅ Endpoint para múltiplos CEPs
-- ✅ Histórico de buscas
-- ✅ Documentação automática (Swagger UI)
-- ✅ Validação de dados com Pydantic
-- ✅ CORS habilitado
-- ✅ Tratamento de erros global
-- ✅ Verificação de saúde da API
-
----
-
-## �️ Integração com Google Maps
-
-A aplicação oferece uma integração avançada com Google Maps para visualizar endereços de forma precisa e intuitiva.
-
-### 🎯 Características
-
-- **Zoom Automático (18x):** Visualização detalhada da localização exata
-- **Coordenadas Precisas:** Obtenidas via Nominatim (OpenStreetMap)
-- **Label Personalizado:** Nome da rua exibido no mapa
-- **Retry Inteligente:** Até 3 tentativas com backoff exponencial
-- **Validações Rigorosas:**
-  - Latitude: -90° a 90°
-  - Longitude: -180° a 180°
-  - Validação de estrutura JSON
-  - Conversão segura de tipos
-- **Tratamento de Erros:**
-  - Timeout automático (5 segundos)
-  - Reconexão com espera progressiva
-  - Limite de requisições (rate limiting)
-  - Fallback para link manual
-- **Performance:**
-  - Delay de 0.5s entre requisições múltiplas
-  - User-Agent configurado para evitar bloqueios
-  - Logging detalhado de operações
-
-### 📍 Como Usar
-
 #### Opção 1: CEP Único
 ```
 1. Escolha "Buscar CEP"
@@ -111,12 +49,56 @@ consulta-cep/
     ├── main.py                  # Aplicação FastAPI
     ├── config.py                # Configurações da API
     ├── requirements.txt         # Dependências do backend
-    └── historico_backend.json   # Histórico da API (gerado automaticamente)
+    ├── .gitignore               # Arquivos ignorados pelo git
+    ├── historico_backend.json   # Histórico da API (gerado automaticamente)
+    │
+    └── templates/
+        └── index.html           # Interface web interativa da API
 ```
 
 ---
 
-## 🔌 Endpoints da API
+## � Como Usar o Backend
+
+### Instalação
+
+```bash
+# 1. Acesse a pasta backend
+cd backend
+
+# 2. Instale as dependências
+pip install -r requirements.txt
+```
+
+### Iniciar o Servidor
+
+```bash
+# Opção 1: Com uvicorn direto
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Opção 2: Executar o script Python
+python main.py
+```
+
+### Acessar a Aplicação
+
+Abra seu navegador e acesse:
+
+- **Interface Web:** `http://localhost:8000`
+- **Swagger UI:** `http://localhost:8000/docs`
+- **ReDoc:** `http://localhost:8000/redoc`
+
+### Features da Interface Web
+
+✨ **Abas da Aplicação:**
+1. 🔍 **Buscar CEP** - Buscar um CEP individual com botões de Google Maps e Uber
+2. 📋 **Múltiplos CEPs** - Buscar vários CEPs de uma vez com resultados formatados
+3. 📚 **Histórico** - Visualizar últimas buscas e limpar histórico
+4. 📖 **Documentação** - Links para Swagger UI e ReDoc
+
+---
+
+## �🔌 Endpoints da API
 
 ### Documentação Interativa
 - **Swagger UI:** `http://localhost:8000/docs`
@@ -172,7 +154,7 @@ curl "http://localhost:8000/cep/01310100/mapa"
 
 #### 3. **Consultar Múltiplos CEPs**
 ```
-POST /cep/multiplo?ceps=01310100&ceps=20040020&ceps=70040902
+GET /cep/multiplo?ceps=01310100&ceps=20040020&ceps=70040902
 ```
 
 **Resposta:**
@@ -364,6 +346,6 @@ Para dúvidas ou problemas, consulte a documentação da API em:
 
 ---
 
-**Versão:** 1.1.0 (Google Maps Avançado)  
+**Versão:** 1.3.0 (Backend Web)  
 **Última atualização:** 23 de Setembro de 2026  
 **Status:** ✅ Pronto para produção
