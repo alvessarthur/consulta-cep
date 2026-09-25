@@ -1,0 +1,399 @@
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Tuple
+import requests
+import json
+import os
+import logging
+import time
+from datetime import datetime
+
+from config import (
+    CEP_API_URL, GEOCODE_API_URL, REQUEST_TIMEOUT, MAX_RETRIES, 
+    RETRY_DELAY, HISTORICO_FILE, CORS_ORIGINS, MAX_MULTIPLOS_CEPS,
+    LIMITE_HISTORICO
+)
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Criar aplicação FastAPI
+app = FastAPI(
+    title="API Consulta CEP",
+    description="API para consultar CEPs brasileiros com integração Google Maps e Uber",
+    version="1.2.1"
+)
+
+# Configurar CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==================== Modelos Pydantic ====================
+
+class Endereco(BaseModel):
+    """Modelo de endereço."""
+    cep: str
+    logradouro: str
+    bairro: str
+    localidade: str
+    uf: str
+    complemento: Optional[str] = ""
+
+class EnderecoComCoordenadas(Endereco):
+    """Modelo de endereço com coordenadas."""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    url_google_maps: Optional[str] = None
+    url_uber: Optional[str] = None
+
+class RegistroHistorico(BaseModel):
+    """Modelo de registro do histórico."""
+    cep: str
+    data: str
+    endereco: Dict
+
+class RespostaMultiplosCeps(BaseModel):
+    """Modelo de resposta para múltiplos CEPs."""
+    total: int
+    sucesso: int
+    falhas: int
+    resultados: List[EnderecoComCoordenadas]
+    erros: List[Dict]
+
+# ==================== Gerenciador de Histórico ====================
+
+class GerenciadorHistorico:
+    """Gerencia o histórico de buscas em arquivo JSON."""
+    
+    def __init__(self, arquivo: str = HISTORICO_FILE):
+        self.arquivo = os.path.join(os.path.dirname(__file__), arquivo)
+        self.dados = self._carregar()
+    
+    def _carregar(self) -> List[Dict]:
+        """Carrega histórico do arquivo."""
+        try:
+            if os.path.exists(self.arquivo):
+                with open(self.arquivo, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return []
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Erro ao carregar histórico: {e}")
+            return []
+    
+    def _salvar(self) -> None:
+        """Salva histórico no arquivo."""
+        try:
+            with open(self.arquivo, 'w', encoding='utf-8') as f:
+                json.dump(self.dados, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            logger.error(f"Erro ao salvar histórico: {e}")
+    
+    def adicionar(self, cep: str, endereco: dict) -> None:
+        """Adiciona uma busca ao histórico."""
+        entrada = {
+            "cep": cep,
+            "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "endereco": endereco
+        }
+        self.dados.append(entrada)
+        # Manter apenas os últimos registros
+        if len(self.dados) > LIMITE_HISTORICO:
+            self.dados = self.dados[-LIMITE_HISTORICO:]
+        self._salvar()
+    
+    def obter_todos(self, limite: int = 10) -> List[Dict]:
+        """Retorna últimos N registros."""
+        return self.dados[-limite:]
+    
+    def limpar(self) -> None:
+        """Limpa o histórico."""
+        self.dados = []
+        self._salvar()
+
+# Instância global do gerenciador
+historico = GerenciadorHistorico()
+
+# ==================== Funções Auxiliares ====================
+
+def validar_cep(cep: str) -> str:
+    """Valida e formata o CEP."""
+    cep = cep.replace("-", "").replace(".", "").strip()
+    
+    if not cep:
+        raise ValueError("CEP não pode estar vazio.")
+    
+    if len(cep) != 8:
+        raise ValueError(f"CEP deve ter 8 dígitos. Recebido: {len(cep)}")
+    
+    if not cep.isdigit():
+        raise ValueError("CEP deve conter apenas dígitos.")
+    
+    return cep
+
+def buscar_endereco(cep: str) -> dict:
+    """Busca o endereço do CEP na API ViaCEP."""
+    try:
+        url = CEP_API_URL.format(cep)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        
+        dados = response.json()
+        
+        if dados.get("erro"):
+            raise ValueError(f"CEP {cep} não encontrado no sistema.")
+        
+        return dados
+    
+    except requests.Timeout:
+        raise ValueError("Timeout ao consultar a API. Tente novamente.")
+    except requests.HTTPError as e:
+        raise ValueError(f"Erro HTTP {e.response.status_code}: {e.response.reason}")
+    except requests.ConnectionError:
+        raise ValueError("Erro de conexão. Verifique sua internet.")
+    except Exception as e:
+        logger.error(f"Erro inesperado: {e}")
+        raise ValueError(f"Erro inesperado: {e}")
+
+def obter_coordenadas(endereco: dict) -> Tuple[Optional[float], Optional[float]]:
+    """Obtém as coordenadas (latitude, longitude) do endereço com retry."""
+    try:
+        logradouro = endereco.get("logradouro", "").strip()
+        localidade = endereco.get("localidade", "").strip()
+        uf = endereco.get("uf", "").strip()
+        
+        if not logradouro or not localidade:
+            logger.warning("Endereço incompleto para geolocalização")
+            return None, None
+        
+        endereco_completo = f"{logradouro}, {localidade}, {uf}, Brasil"
+        
+        params = {
+            "q": endereco_completo,
+            "format": "json",
+            "limit": 1,
+            "timeout": REQUEST_TIMEOUT,
+            "accept-language": "pt-BR"
+        }
+        
+        for tentativa in range(MAX_RETRIES):
+            try:
+                response = requests.get(
+                    GEOCODE_API_URL,
+                    params=params,
+                    timeout=REQUEST_TIMEOUT,
+                    headers={"User-Agent": "Consulta-CEP-API/1.0"}
+                )
+                response.raise_for_status()
+                
+                dados = response.json()
+                
+                if not dados:
+                    return None, None
+                
+                if not isinstance(dados[0], dict):
+                    return None, None
+                
+                try:
+                    lat = float(dados[0].get("lat"))
+                    lon = float(dados[0].get("lon"))
+                except (ValueError, TypeError):
+                    return None, None
+                
+                if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                    return None, None
+                
+                return lat, lon
+            
+            except (requests.Timeout, requests.ConnectionError):
+                if tentativa < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (tentativa + 1))
+                else:
+                    return None, None
+            except requests.HTTPError as e:
+                if e.response.status_code == 429 and tentativa < MAX_RETRIES - 1:
+                    espera = RETRY_DELAY * (2 ** tentativa)
+                    time.sleep(espera)
+                else:
+                    return None, None
+    
+    except Exception as e:
+        logger.error(f"Erro ao obter coordenadas: {e}")
+        return None, None
+
+def gerar_urls_integracao(endereco: dict, lat: Optional[float], lon: Optional[float]) -> dict:
+    """Gera URLs de integração com Google Maps e Uber."""
+    urls = {
+        "url_google_maps": None,
+        "url_uber": None
+    }
+    
+    if lat is not None and lon is not None:
+        logradouro = endereco.get("logradouro", "Localização").replace(" ", "+")
+        urls["url_google_maps"] = f"https://www.google.com/maps/search/{logradouro}/@{lat},{lon},18z"
+        urls["url_uber"] = f"https://m.uber.com/?action=setPickupLocation&pickup[latitude]={lat}&pickup[longitude]={lon}"
+    
+    return urls
+
+# ==================== Endpoints ====================
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Retorna a página HTML principal."""
+    html_file = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+    try:
+        with open(html_file, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return """
+        <html>
+            <body>
+                <h1>API Consulta CEP</h1>
+                <p>Bem-vindo à API de Consulta de CEP!</p>
+                <p><a href="/docs">Documentação (Swagger)</a></p>
+                <p><a href="/redoc">Documentação (ReDoc)</a></p>
+            </body>
+        </html>
+        """
+
+@app.get("/saude")
+async def verificar_saude():
+    """Verifica a saúde da API."""
+    return {
+        "status": "online",
+        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "versao": "1.2.1"
+    }
+
+@app.get("/cep/{cep}", response_model=Endereco)
+async def consultar_cep(cep: str):
+    """Consulta um CEP específico."""
+    try:
+        cep_validado = validar_cep(cep)
+        endereco = buscar_endereco(cep_validado)
+        historico.adicionar(cep_validado, endereco)
+        
+        return Endereco(
+            cep=endereco.get("cep"),
+            logradouro=endereco.get("logradouro", ""),
+            bairro=endereco.get("bairro", ""),
+            localidade=endereco.get("localidade", ""),
+            uf=endereco.get("uf", ""),
+            complemento=endereco.get("complemento", "")
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Erro ao consultar CEP: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.get("/cep/{cep}/mapa", response_model=EnderecoComCoordenadas)
+async def consultar_cep_com_mapa(cep: str):
+    """Consulta um CEP e retorna coordenadas para Google Maps e Uber."""
+    try:
+        cep_validado = validar_cep(cep)
+        endereco = buscar_endereco(cep_validado)
+        historico.adicionar(cep_validado, endereco)
+        
+        lat, lon = obter_coordenadas(endereco)
+        urls = gerar_urls_integracao(endereco, lat, lon)
+        
+        return EnderecoComCoordenadas(
+            cep=endereco.get("cep"),
+            logradouro=endereco.get("logradouro", ""),
+            bairro=endereco.get("bairro", ""),
+            localidade=endereco.get("localidade", ""),
+            uf=endereco.get("uf", ""),
+            complemento=endereco.get("complemento", ""),
+            latitude=lat,
+            longitude=lon,
+            url_google_maps=urls["url_google_maps"],
+            url_uber=urls["url_uber"]
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Erro ao consultar CEP com mapa: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.get("/cep/multiplo", response_model=RespostaMultiplosCeps)
+async def consultar_multiplos_ceps(ceps: List[str] = Query(...)):
+    """Consulta múltiplos CEPs."""
+    if len(ceps) > MAX_MULTIPLOS_CEPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Máximo de {MAX_MULTIPLOS_CEPS} CEPs por requisição"
+        )
+    
+    resultados = []
+    erros = []
+    
+    for cep in ceps:
+        try:
+            cep_validado = validar_cep(cep)
+            endereco = buscar_endereco(cep_validado)
+            historico.adicionar(cep_validado, endereco)
+            
+            lat, lon = obter_coordenadas(endereco)
+            urls = gerar_urls_integracao(endereco, lat, lon)
+            
+            resultado = EnderecoComCoordenadas(
+                cep=endereco.get("cep"),
+                logradouro=endereco.get("logradouro", ""),
+                bairro=endereco.get("bairro", ""),
+                localidade=endereco.get("localidade", ""),
+                uf=endereco.get("uf", ""),
+                complemento=endereco.get("complemento", ""),
+                latitude=lat,
+                longitude=lon,
+                url_google_maps=urls["url_google_maps"],
+                url_uber=urls["url_uber"]
+            )
+            resultados.append(resultado)
+        
+        except ValueError as e:
+            erros.append({"cep": cep, "erro": str(e)})
+        except Exception as e:
+            erros.append({"cep": cep, "erro": "Erro inesperado"})
+    
+    return RespostaMultiplosCeps(
+        total=len(ceps),
+        sucesso=len(resultados),
+        falhas=len(erros),
+        resultados=resultados,
+        erros=erros
+    )
+
+@app.get("/historico")
+async def obter_historico(limite: int = Query(10, ge=1, le=100)):
+    """Obtém o histórico de buscas."""
+    dados = historico.obter_todos(limite)
+    return {
+        "total": len(dados),
+        "itens": dados
+    }
+
+@app.delete("/historico")
+async def limpar_historico():
+    """Limpa o histórico."""
+    historico.limpar()
+    return {
+        "mensagem": "Histórico limpo com sucesso"
+    }
+
+# ==================== Main ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
